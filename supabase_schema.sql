@@ -310,3 +310,229 @@ grant execute on function get_qr_payload(text) to anon, authenticated;
 grant execute on function get_bootstrap(text, text) to anon, authenticated;
 grant execute on function register_attendance(jsonb) to anon, authenticated;
 grant execute on function admin_snapshot(text) to anon, authenticated;
+
+create or replace function is_admin_password(password text)
+returns boolean
+language sql
+security definer
+set search_path = public
+as $$
+  select encode(extensions.digest(coalesce(password, ''), 'sha256'), 'hex') = private_setting('admin_password_sha256')
+$$;
+
+create or replace function normalize_admin_choice(value text, allowed text[], field_name text)
+returns text
+language plpgsql
+stable
+as $$
+declare
+  clean text := nullif(trim(value), '');
+begin
+  if clean is null or not (clean = any(allowed)) then
+    raise exception 'Valor invalido para %.', field_name;
+  end if;
+  return clean;
+end;
+$$;
+
+create or replace function parse_local_record_time(fecha_text text, hora_text text)
+returns timestamptz
+language plpgsql
+stable
+as $$
+declare
+  f text := trim(fecha_text);
+  h text := trim(hora_text);
+  parts text[];
+  time_parts text[];
+begin
+  if f !~ '^\d{2}/\d{2}/\d{4}$' then
+    raise exception 'Fecha invalida. Usa DD/MM/YYYY.';
+  end if;
+
+  if h !~ '^\d{2}:\d{2}(:\d{2})?$' then
+    raise exception 'Hora invalida. Usa HH:MM o HH:MM:SS.';
+  end if;
+
+  parts := regexp_split_to_array(f, '/');
+  time_parts := regexp_split_to_array(h, ':');
+
+  return make_timestamptz(
+    parts[3]::int,
+    parts[2]::int,
+    parts[1]::int,
+    time_parts[1]::int,
+    time_parts[2]::int,
+    coalesce(time_parts[3], '0')::double precision,
+    'America/Ciudad_Juarez'
+  );
+end;
+$$;
+
+create or replace function admin_snapshot(password text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not is_admin_password(password) then
+    raise exception 'Contraseña incorrecta.';
+  end if;
+
+  return jsonb_build_object(
+    'registros', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'uuid', id,
+        'timestamp', to_char(created_at at time zone 'America/Ciudad_Juarez', 'DD/MM/YYYY HH24:MI:SS'),
+        'fecha', fecha,
+        'hora', hora,
+        'id', mips_id,
+        'nombre', nombre,
+        'servicio', servicio,
+        'turno', turno,
+        'tipo', tipo,
+        'estado_qr', estado_qr,
+        'dispositivo', dispositivo,
+        'folio_registro', folio_registro
+      ) order by created_at)
+      from attendance_records
+    ), '[]'::jsonb),
+    'usuarios', coalesce((
+      select jsonb_agg(user_to_json(u) || jsonb_build_object('uuid', u.id) order by u.user_number)
+      from users_mips u
+    ), '[]'::jsonb)
+  );
+end;
+$$;
+
+create or replace function admin_update_record(password text, record_uuid uuid, payload jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  req_fecha text := trim(payload->>'fecha');
+  req_hora text := trim(payload->>'hora');
+  req_nombre text := nullif(trim(payload->>'nombre'), '');
+  req_servicio text;
+  req_turno text;
+  req_tipo text;
+  req_estado text;
+  req_created_at timestamptz;
+begin
+  if not is_admin_password(password) then
+    raise exception 'Contraseña incorrecta.';
+  end if;
+
+  if req_nombre is null then
+    raise exception 'El nombre no puede quedar vacio.';
+  end if;
+
+  req_servicio := normalize_admin_choice(payload->>'servicio', array['Hospitalizacion 2do', 'Hospitalizacion 3ero', 'UCIA', 'Quirofano', 'Urgencias'], 'servicio');
+  req_turno := normalize_admin_choice(payload->>'turno', array['Matutino', 'Vespertino'], 'turno');
+  req_tipo := normalize_admin_choice(lower(payload->>'tipo'), array['entrada', 'salida'], 'tipo');
+  req_estado := normalize_admin_choice(lower(payload->>'estado_qr'), array['normal', 'fuera de horario'], 'estado');
+  req_created_at := parse_local_record_time(req_fecha, req_hora);
+
+  update attendance_records
+  set
+    fecha = req_fecha,
+    hora = case when req_hora ~ '^\d{2}:\d{2}$' then req_hora || ':00' else req_hora end,
+    created_at = req_created_at,
+    nombre = req_nombre,
+    servicio = req_servicio,
+    turno = req_turno,
+    tipo = req_tipo,
+    estado_qr = req_estado
+  where id = record_uuid;
+
+  if not found then
+    raise exception 'Registro no encontrado.';
+  end if;
+
+  return admin_snapshot(password);
+end;
+$$;
+
+create or replace function admin_delete_record(password text, record_uuid uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not is_admin_password(password) then
+    raise exception 'Contraseña incorrecta.';
+  end if;
+
+  delete from attendance_records where id = record_uuid;
+  if not found then
+    raise exception 'Registro no encontrado.';
+  end if;
+
+  return admin_snapshot(password);
+end;
+$$;
+
+create or replace function admin_update_user(password text, user_uuid uuid, payload jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  req_nombre text := nullif(trim(payload->>'nombre'), '');
+  req_servicio text;
+  req_turno text;
+  req_activo boolean := coalesce((payload->>'activo')::boolean, true);
+begin
+  if not is_admin_password(password) then
+    raise exception 'Contraseña incorrecta.';
+  end if;
+
+  if req_nombre is null then
+    raise exception 'El nombre no puede quedar vacio.';
+  end if;
+
+  req_servicio := normalize_admin_choice(payload->>'servicio', array['Hospitalizacion 2do', 'Hospitalizacion 3ero', 'UCIA', 'Quirofano', 'Urgencias'], 'servicio');
+  req_turno := normalize_admin_choice(payload->>'turno', array['Matutino', 'Vespertino'], 'turno');
+
+  update users_mips
+  set nombre = req_nombre, servicio = req_servicio, turno = req_turno, activo = req_activo
+  where id = user_uuid;
+
+  if not found then
+    raise exception 'Personal no encontrado.';
+  end if;
+
+  return admin_snapshot(password);
+end;
+$$;
+
+create or replace function admin_delete_user(password text, user_uuid uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not is_admin_password(password) then
+    raise exception 'Contraseña incorrecta.';
+  end if;
+
+  update attendance_records set user_id = null where user_id = user_uuid;
+  delete from users_mips where id = user_uuid;
+  if not found then
+    raise exception 'Personal no encontrado.';
+  end if;
+
+  return admin_snapshot(password);
+end;
+$$;
+
+grant execute on function admin_update_record(text, uuid, jsonb) to anon, authenticated;
+grant execute on function admin_delete_record(text, uuid) to anon, authenticated;
+grant execute on function admin_update_user(text, uuid, jsonb) to anon, authenticated;
+grant execute on function admin_delete_user(text, uuid) to anon, authenticated;

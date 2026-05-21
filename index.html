@@ -301,6 +301,21 @@
   .filter-field { min-width: 150px; }
   .filter-field input, .filter-field select { padding: 10px 12px; font-size: .86rem; }
   .action-btn { padding: 12px 18px; }
+  .mini-actions {
+    display: inline-flex;
+    gap: 8px;
+  }
+  .mini-btn {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #111a2b;
+    color: var(--muted);
+    padding: 7px 10px;
+    font-family: "DM Mono", monospace;
+    font-size: .68rem;
+  }
+  .mini-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .mini-btn.danger:hover { border-color: #ff6b6b; color: #ff8a8a; }
   .table-wrap {
     overflow: auto;
     border: 1px solid var(--line);
@@ -356,6 +371,45 @@
     text-overflow: ellipsis;
   }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+    background: rgba(4, 9, 17, .72);
+    backdrop-filter: blur(10px);
+  }
+  .modal-backdrop.show { display: flex; }
+  .modal-card {
+    width: min(100%, 520px);
+    max-height: min(92vh, 760px);
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: 0 28px 90px rgba(0, 0, 0, .35);
+    padding: 24px;
+  }
+  .modal-card h3 {
+    font-family: "DM Serif Display", serif;
+    font-size: 1.6rem;
+  }
+  .modal-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-top: 16px;
+  }
+  .modal-grid .wide { grid-column: 1 / -1; }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 20px;
+  }
   @media (max-width: 640px) {
     header, .admin-header { padding: 14px 16px; }
     .logo { font-size: 1.12rem; }
@@ -363,6 +417,8 @@
     .admin-body { padding: 16px; }
     .filter-field { width: 100%; }
     .action-btn { width: 100%; }
+    .modal-grid { grid-template-columns: 1fr; }
+    .modal-actions { flex-direction: column-reverse; }
   }
 </style>
 </head>
@@ -479,7 +535,7 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>Nombre</th><th>Servicio</th><th>Turno</th><th>Tipo</th><th>Fecha</th><th>Hora</th><th>Estado</th><th>Folio</th></tr></thead>
+          <thead><tr><th>ID</th><th>Nombre</th><th>Servicio</th><th>Turno</th><th>Tipo</th><th>Fecha</th><th>Hora</th><th>Estado</th><th>Folio</th><th>Acciones</th></tr></thead>
           <tbody id="registros-body"></tbody>
         </table>
       </div>
@@ -487,7 +543,7 @@
     <div id="tab-usuarios" style="display:none">
       <div class="table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>Nombre</th><th>Servicio</th><th>Turno</th><th>Fecha registro</th><th>Activo</th></tr></thead>
+          <thead><tr><th>ID</th><th>Nombre</th><th>Servicio</th><th>Turno</th><th>Fecha registro</th><th>Activo</th><th>Acciones</th></tr></thead>
           <tbody id="usuarios-body"></tbody>
         </table>
       </div>
@@ -496,6 +552,16 @@
 </main>
 
 <div class="toast" id="toast"></div>
+<div class="modal-backdrop" id="edit-modal">
+  <div class="modal-card">
+    <h3 id="modal-title">Editar</h3>
+    <div class="modal-grid" id="modal-fields"></div>
+    <div class="modal-actions">
+      <button class="ghost-btn" onclick="closeEditor()">Cancelar</button>
+      <button class="action-btn" id="modal-save" onclick="saveEditor()">Guardar</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const SUPABASE_URL = 'https://vlsjbtwqkczarbeiikbk.supabase.co';
@@ -513,6 +579,8 @@ let adminPassword = '';
 let allRegistros = [];
 let allUsuarios = [];
 let filteredRecords = [];
+let editMode = '';
+let editUuid = '';
 const servicios = ['Hospitalizacion 2do', 'Hospitalizacion 3ero', 'UCIA', 'Quirofano', 'Urgencias'];
 const turnos = ['Matutino', 'Vespertino'];
 
@@ -714,7 +782,7 @@ function statHtml(label, value, color) {
 function renderRegistros() {
   const body = document.getElementById('registros-body');
   if (!filteredRecords.length) {
-    body.innerHTML = '<tr><td colspan="9">Sin registros en el periodo seleccionado</td></tr>';
+    body.innerHTML = '<tr><td colspan="10">Sin registros en el periodo seleccionado</td></tr>';
     return;
   }
   body.innerHTML = filteredRecords.slice().reverse().map(row => {
@@ -724,6 +792,7 @@ function renderRegistros() {
       '<td>' + escapeHtml(row.id) + '</td><td>' + escapeHtml(row.nombre) + '</td><td>' + escapeHtml(row.servicio) + '</td>' +
       '<td>' + escapeHtml(row.turno) + '</td><td><span class="badge ' + tipoClass + '">' + escapeHtml(row.tipo) + '</span></td>' +
       '<td>' + escapeHtml(row.fecha) + '</td><td>' + escapeHtml(row.hora) + '</td><td>' + estado + '</td><td>' + escapeHtml(row.folio_registro) + '</td>' +
+      '<td><span class="mini-actions"><button class="mini-btn" onclick="openRecordEditor(\'' + escapeAttr(row.uuid) + '\')">Editar</button><button class="mini-btn danger" onclick="deleteRecord(\'' + escapeAttr(row.uuid) + '\')">Borrar</button></span></td>' +
     '</tr>';
   }).join('');
 }
@@ -731,13 +800,110 @@ function renderRegistros() {
 function renderUsuarios() {
   const body = document.getElementById('usuarios-body');
   if (!allUsuarios.length) {
-    body.innerHTML = '<tr><td colspan="6">Sin personal registrado</td></tr>';
+    body.innerHTML = '<tr><td colspan="7">Sin personal registrado</td></tr>';
     return;
   }
   body.innerHTML = allUsuarios.map(row => '<tr>' +
     '<td>' + escapeHtml(row.id) + '</td><td>' + escapeHtml(row.nombre) + '</td><td>' + escapeHtml(row.servicio) + '</td>' +
     '<td>' + escapeHtml(row.turno) + '</td><td>' + escapeHtml(row.fecha_registro) + '</td><td>' + escapeHtml(row.activo) + '</td>' +
+    '<td><span class="mini-actions"><button class="mini-btn" onclick="openUserEditor(\'' + escapeAttr(row.uuid) + '\')">Editar</button><button class="mini-btn danger" onclick="deleteUser(\'' + escapeAttr(row.uuid) + '\')">Borrar</button></span></td>' +
   '</tr>').join('');
+}
+
+function openRecordEditor(uuid) {
+  const row = allRegistros.find(item => item.uuid === uuid);
+  if (!row) return showToast('Registro no encontrado');
+  editMode = 'record';
+  editUuid = uuid;
+  document.getElementById('modal-title').textContent = 'Editar registro';
+  document.getElementById('modal-fields').innerHTML =
+    fieldHtml('Nombre', 'edit-nombre', row.nombre, 'wide') +
+    selectHtml('Servicio', 'edit-servicio', servicios, row.servicio) +
+    selectHtml('Turno', 'edit-turno', turnos, row.turno) +
+    selectHtml('Tipo', 'edit-tipo', ['entrada', 'salida'], row.tipo) +
+    selectHtml('Estado', 'edit-estado', ['normal', 'fuera de horario'], row.estado_qr) +
+    fieldHtml('Fecha', 'edit-fecha', row.fecha) +
+    fieldHtml('Hora', 'edit-hora', row.hora);
+  document.getElementById('edit-modal').classList.add('show');
+}
+
+function openUserEditor(uuid) {
+  const row = allUsuarios.find(item => item.uuid === uuid);
+  if (!row) return showToast('Personal no encontrado');
+  editMode = 'user';
+  editUuid = uuid;
+  document.getElementById('modal-title').textContent = 'Editar personal';
+  document.getElementById('modal-fields').innerHTML =
+    fieldHtml('Nombre', 'edit-nombre', row.nombre, 'wide') +
+    selectHtml('Servicio', 'edit-servicio', servicios, row.servicio) +
+    selectHtml('Turno', 'edit-turno', turnos, row.turno) +
+    selectHtml('Activo', 'edit-activo', ['SI', 'NO'], row.activo);
+  document.getElementById('edit-modal').classList.add('show');
+}
+
+function closeEditor() {
+  editMode = '';
+  editUuid = '';
+  document.getElementById('edit-modal').classList.remove('show');
+}
+
+async function saveEditor() {
+  const button = document.getElementById('modal-save');
+  button.disabled = true;
+  button.textContent = 'Guardando...';
+  let rpc = '';
+  let args = {};
+  if (editMode === 'record') {
+    rpc = 'admin_update_record';
+    args = {
+      password: adminPassword,
+      record_uuid: editUuid,
+      payload: {
+        nombre: valueOf('edit-nombre'),
+        servicio: valueOf('edit-servicio'),
+        turno: valueOf('edit-turno'),
+        tipo: valueOf('edit-tipo'),
+        estado_qr: valueOf('edit-estado'),
+        fecha: valueOf('edit-fecha'),
+        hora: valueOf('edit-hora')
+      }
+    };
+  } else if (editMode === 'user') {
+    rpc = 'admin_update_user';
+    args = {
+      password: adminPassword,
+      user_uuid: editUuid,
+      payload: {
+        nombre: valueOf('edit-nombre'),
+        servicio: valueOf('edit-servicio'),
+        turno: valueOf('edit-turno'),
+        activo: valueOf('edit-activo') === 'SI'
+      }
+    };
+  }
+  const { data, error } = await sb.rpc(rpc, args);
+  button.disabled = false;
+  button.textContent = 'Guardar';
+  if (error) return showToast(error.message);
+  closeEditor();
+  loadAdminFromSnapshot(data, false);
+  showToast('Cambios guardados');
+}
+
+async function deleteRecord(uuid) {
+  if (!confirm('Borrar este registro de asistencia?')) return;
+  const { data, error } = await sb.rpc('admin_delete_record', { password: adminPassword, record_uuid: uuid });
+  if (error) return showToast(error.message);
+  loadAdminFromSnapshot(data, false);
+  showToast('Registro borrado');
+}
+
+async function deleteUser(uuid) {
+  if (!confirm('Borrar este personal? Sus registros historicos se conservan.')) return;
+  const { data, error } = await sb.rpc('admin_delete_user', { password: adminPassword, user_uuid: uuid });
+  if (error) return showToast(error.message);
+  loadAdminFromSnapshot(data, false);
+  showToast('Personal borrado');
 }
 
 function switchTab(tab) {
@@ -794,6 +960,20 @@ function dateForCompare(value) {
   return text.slice(0, 10);
 }
 
+function fieldHtml(label, id, value, extraClass) {
+  return '<div class="field ' + (extraClass || '') + '"><label>' + label + '</label><input id="' + id + '" value="' + escapeAttr(value) + '"></div>';
+}
+
+function selectHtml(label, id, items, selected) {
+  return '<div class="field"><label>' + label + '</label><select id="' + id + '">' +
+    items.map(item => '<option value="' + escapeAttr(item) + '"' + (item === selected ? ' selected' : '') + '>' + escapeHtml(item) + '</option>').join('') +
+    '</select></div>';
+}
+
+function valueOf(id) {
+  return document.getElementById(id).value.trim();
+}
+
 function getDeviceKey() {
   const raw = navigator.userAgent || '';
   const key = 'DK-UA-' + simpleHash(raw);
@@ -826,6 +1006,10 @@ function escapeHtml(value) {
   return String(value == null ? '' : value)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/`/g, '&#096;');
 }
 
 function isConfigured() {
