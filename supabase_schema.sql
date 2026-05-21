@@ -15,7 +15,7 @@ create table if not exists users_mips (
   turno text not null,
   device_key text,
   fecha_registro timestamptz not null default now(),
-  ultimo_mes text not null default to_char(now() at time zone 'America/Ojinaga', 'YYYY-MM'),
+  ultimo_mes text not null default to_char(now() at time zone 'America/Ciudad_Juarez', 'YYYY-MM'),
   activo boolean not null default true,
   notas text default ''
 );
@@ -111,7 +111,7 @@ as $$
     'nombre', u.nombre,
     'servicio', u.servicio,
     'turno', u.turno,
-    'fecha_registro', to_char(u.fecha_registro at time zone 'America/Ojinaga', 'DD/MM/YYYY HH24:MI:SS'),
+    'fecha_registro', to_char(u.fecha_registro at time zone 'America/Ciudad_Juarez', 'DD/MM/YYYY HH24:MI:SS'),
     'ultimo_mes', u.ultimo_mes,
     'activo', case when u.activo then 'SI' else 'NO' end
   )
@@ -154,8 +154,8 @@ as $$
 declare
   total int;
 begin
-  total := extract(hour from moment at time zone 'America/Ojinaga')::int * 60
-    + extract(minute from moment at time zone 'America/Ojinaga')::int;
+  total := extract(hour from moment at time zone 'America/Ciudad_Juarez')::int * 60
+    + extract(minute from moment at time zone 'America/Ciudad_Juarez')::int;
 
   if turno = 'Matutino' and tipo = 'entrada' then
     return not (total between 420 and 435);
@@ -231,14 +231,14 @@ begin
   end if;
 
   out_of_schedule := is_out_of_schedule(u.turno, req_tipo, now_local);
-  new_folio := 'REG-' || to_char(now_local at time zone 'America/Ojinaga', 'YYYYMMDD-HH24MISS') || '-' || u.mips_id;
+  new_folio := 'REG-' || to_char(now_local at time zone 'America/Ciudad_Juarez', 'YYYYMMDD-HH24MISS') || '-' || u.mips_id;
 
   insert into attendance_records (
     fecha, hora, user_id, mips_id, nombre, servicio, turno, tipo, estado_qr, dispositivo, folio_registro
   )
   values (
-    to_char(now_local at time zone 'America/Ojinaga', 'DD/MM/YYYY'),
-    to_char(now_local at time zone 'America/Ojinaga', 'HH24:MI:SS'),
+    to_char(now_local at time zone 'America/Ciudad_Juarez', 'DD/MM/YYYY'),
+    to_char(now_local at time zone 'America/Ciudad_Juarez', 'HH24:MI:SS'),
     u.id,
     u.mips_id,
     u.nombre,
@@ -254,9 +254,9 @@ begin
     'ok', true,
     'user', user_to_json(u),
     'record', jsonb_build_object(
-      'timestamp', to_char(now_local at time zone 'America/Ojinaga', 'DD/MM/YYYY HH24:MI:SS'),
-      'fecha', to_char(now_local at time zone 'America/Ojinaga', 'DD/MM/YYYY'),
-      'hora', to_char(now_local at time zone 'America/Ojinaga', 'HH24:MI:SS'),
+      'timestamp', to_char(now_local at time zone 'America/Ciudad_Juarez', 'DD/MM/YYYY HH24:MI:SS'),
+      'fecha', to_char(now_local at time zone 'America/Ciudad_Juarez', 'DD/MM/YYYY'),
+      'hora', to_char(now_local at time zone 'America/Ciudad_Juarez', 'HH24:MI:SS'),
       'id', u.mips_id,
       'nombre', u.nombre,
       'servicio', u.servicio,
@@ -284,7 +284,7 @@ begin
   return jsonb_build_object(
     'registros', coalesce((
       select jsonb_agg(jsonb_build_object(
-        'timestamp', to_char(created_at at time zone 'America/Ojinaga', 'DD/MM/YYYY HH24:MI:SS'),
+        'timestamp', to_char(created_at at time zone 'America/Ciudad_Juarez', 'DD/MM/YYYY HH24:MI:SS'),
         'fecha', fecha,
         'hora', hora,
         'id', mips_id,

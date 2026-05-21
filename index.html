@@ -523,8 +523,8 @@ function showPage(id) {
 
 function tickClock() {
   const now = new Date();
-  document.getElementById('live-clock').textContent = now.toLocaleTimeString('es-MX', { hour12: false });
-  document.getElementById('live-date').textContent = now.toLocaleDateString('es-MX', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  document.getElementById('live-clock').textContent = now.toLocaleTimeString('es-MX', { hour12: false, timeZone: 'America/Ciudad_Juarez' });
+  document.getElementById('live-date').textContent = now.toLocaleDateString('es-MX', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'America/Ciudad_Juarez' });
 }
 
 async function refreshQr() {
@@ -565,7 +565,7 @@ async function initRegister() {
   showPage('page-register');
   selectedTipo = null;
   selectTipo('');
-  document.getElementById('reg-date').textContent = new Date().toLocaleString('es-MX', { hour12: false });
+  document.getElementById('reg-date').textContent = new Date().toLocaleString('es-MX', { hour12: false, timeZone: 'America/Ciudad_Juarez' });
   document.getElementById('form-status').textContent = 'Cargando perfil...';
   initSelect('inp-servicio', servicios, 'Selecciona servicio');
   initSelect('inp-turno', turnos, 'Selecciona turno');
