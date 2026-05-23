@@ -536,3 +536,256 @@ grant execute on function admin_update_record(text, uuid, jsonb) to anon, authen
 grant execute on function admin_delete_record(text, uuid) to anon, authenticated;
 grant execute on function admin_update_user(text, uuid, jsonb) to anon, authenticated;
 grant execute on function admin_delete_user(text, uuid) to anon, authenticated;
+
+alter table users_mips add column if not exists pin_hash text;
+
+create or replace function hash_user_pin(user_mips_id text, pin text)
+returns text
+language sql
+security definer
+set search_path = public
+as $$
+  select encode(extensions.digest(upper(trim(user_mips_id)) || ':' || trim(pin), 'sha256'), 'hex')
+$$;
+
+create or replace function validate_pin(pin text)
+returns text
+language plpgsql
+stable
+as $$
+declare
+  clean text := trim(coalesce(pin, ''));
+begin
+  if clean !~ '^\d{4}$' then
+    raise exception 'El PIN debe tener 4 digitos.';
+  end if;
+  return clean;
+end;
+$$;
+
+create or replace function user_to_json(u users_mips)
+returns jsonb
+language sql
+stable
+as $$
+  select jsonb_build_object(
+    'id', u.mips_id,
+    'nombre', u.nombre,
+    'servicio', u.servicio,
+    'turno', u.turno,
+    'fecha_registro', to_char(u.fecha_registro at time zone 'America/Ciudad_Juarez', 'DD/MM/YYYY HH24:MI:SS'),
+    'ultimo_mes', u.ultimo_mes,
+    'activo', case when u.activo then 'SI' else 'NO' end,
+    'pin_configurado', case when u.pin_hash is null then 'NO' else 'SI' end
+  )
+$$;
+
+create or replace function get_bootstrap(profile_id text default null, device_key_input text default null)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  u users_mips;
+begin
+  select *
+  into u
+  from users_mips
+  where activo = true
+    and profile_id is not null
+    and device_key_input is not null
+    and mips_id = upper(trim(profile_id))
+    and device_key = device_key_input
+  order by fecha_registro desc
+  limit 1;
+
+  return jsonb_build_object(
+    'user', case when u.id is null then null else user_to_json(u) end,
+    'serverTime', now(),
+    'servicios', jsonb_build_array('Hospitalizacion 2do', 'Hospitalizacion 3ero', 'UCIA', 'Quirofano', 'Urgencias'),
+    'turnos', jsonb_build_array('Matutino', 'Vespertino')
+  );
+end;
+$$;
+
+create or replace function register_attendance(payload jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  token text := payload->>'token';
+  req_tipo text := lower(trim(payload->>'tipo'));
+  req_id text := upper(nullif(trim(payload->>'id'), ''));
+  req_pin text := nullif(trim(payload->>'pin'), '');
+  req_device_key text := nullif(trim(payload->>'deviceKey'), '');
+  req_dispositivo text := nullif(trim(payload->>'dispositivo'), '');
+  u users_mips;
+  now_local timestamptz := now();
+  out_of_schedule boolean;
+  new_folio text;
+begin
+  if not is_valid_qr_token(token) then
+    raise exception 'QR expirado. Escanea el codigo nuevamente.';
+  end if;
+
+  if req_tipo not in ('entrada', 'salida') then
+    raise exception 'Selecciona Entrada o Salida.';
+  end if;
+
+  if req_id is null then
+    raise exception 'Ingresa tu ID MIPS.';
+  end if;
+
+  select *
+  into u
+  from users_mips
+  where activo = true and mips_id = req_id
+  limit 1;
+
+  if u.id is null then
+    raise exception 'ID MIPS no encontrado. Verifica el ID con administracion.';
+  end if;
+
+  if req_device_key is null or u.device_key is distinct from req_device_key then
+    if u.pin_hash is null then
+      raise exception 'Este usuario no tiene PIN configurado. Pide al admin que lo configure.';
+    end if;
+
+    if req_pin is null or hash_user_pin(u.mips_id, validate_pin(req_pin)) <> u.pin_hash then
+      raise exception 'ID o PIN incorrecto.';
+    end if;
+
+    update users_mips
+    set device_key = req_device_key
+    where id = u.id
+    returning * into u;
+  end if;
+
+  out_of_schedule := is_out_of_schedule(u.turno, req_tipo, now_local);
+  new_folio := 'REG-' || to_char(now_local at time zone 'America/Ciudad_Juarez', 'YYYYMMDD-HH24MISS') || '-' || u.mips_id;
+
+  insert into attendance_records (
+    fecha, hora, user_id, mips_id, nombre, servicio, turno, tipo, estado_qr, dispositivo, folio_registro
+  )
+  values (
+    to_char(now_local at time zone 'America/Ciudad_Juarez', 'DD/MM/YYYY'),
+    to_char(now_local at time zone 'America/Ciudad_Juarez', 'HH24:MI:SS'),
+    u.id,
+    u.mips_id,
+    u.nombre,
+    u.servicio,
+    u.turno,
+    req_tipo,
+    case when out_of_schedule then 'fuera de horario' else 'normal' end,
+    req_dispositivo,
+    new_folio
+  );
+
+  return jsonb_build_object(
+    'ok', true,
+    'user', user_to_json(u),
+    'record', jsonb_build_object(
+      'timestamp', to_char(now_local at time zone 'America/Ciudad_Juarez', 'DD/MM/YYYY HH24:MI:SS'),
+      'fecha', to_char(now_local at time zone 'America/Ciudad_Juarez', 'DD/MM/YYYY'),
+      'hora', to_char(now_local at time zone 'America/Ciudad_Juarez', 'HH24:MI:SS'),
+      'id', u.mips_id,
+      'nombre', u.nombre,
+      'servicio', u.servicio,
+      'turno', u.turno,
+      'tipo', req_tipo,
+      'estado_qr', case when out_of_schedule then 'fuera de horario' else 'normal' end,
+      'dispositivo', req_dispositivo,
+      'folio_registro', new_folio
+    )
+  );
+end;
+$$;
+
+create or replace function admin_create_user(password text, payload jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  req_mips_id text := upper(nullif(trim(payload->>'mips_id'), ''));
+  req_nombre text := nullif(trim(payload->>'nombre'), '');
+  req_servicio text;
+  req_turno text;
+  req_pin text := validate_pin(payload->>'pin');
+  req_activo boolean := coalesce((payload->>'activo')::boolean, true);
+begin
+  if not is_admin_password(password) then
+    raise exception 'Contraseña incorrecta.';
+  end if;
+
+  if req_mips_id is null then
+    raise exception 'El ID MIPS no puede quedar vacio.';
+  end if;
+
+  if req_nombre is null then
+    raise exception 'El nombre no puede quedar vacio.';
+  end if;
+
+  req_servicio := normalize_admin_choice(payload->>'servicio', array['Hospitalizacion 2do', 'Hospitalizacion 3ero', 'UCIA', 'Quirofano', 'Urgencias'], 'servicio');
+  req_turno := normalize_admin_choice(payload->>'turno', array['Matutino', 'Vespertino'], 'turno');
+
+  insert into users_mips (mips_id, nombre, servicio, turno, pin_hash, activo)
+  values (req_mips_id, req_nombre, req_servicio, req_turno, hash_user_pin(req_mips_id, req_pin), req_activo);
+
+  return admin_snapshot(password);
+end;
+$$;
+
+create or replace function admin_update_user(password text, user_uuid uuid, payload jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  req_mips_id text := upper(nullif(trim(payload->>'mips_id'), ''));
+  req_nombre text := nullif(trim(payload->>'nombre'), '');
+  req_servicio text;
+  req_turno text;
+  req_pin text := nullif(trim(payload->>'pin'), '');
+  req_activo boolean := coalesce((payload->>'activo')::boolean, true);
+begin
+  if not is_admin_password(password) then
+    raise exception 'Contraseña incorrecta.';
+  end if;
+
+  if req_mips_id is null then
+    raise exception 'El ID MIPS no puede quedar vacio.';
+  end if;
+
+  if req_nombre is null then
+    raise exception 'El nombre no puede quedar vacio.';
+  end if;
+
+  req_servicio := normalize_admin_choice(payload->>'servicio', array['Hospitalizacion 2do', 'Hospitalizacion 3ero', 'UCIA', 'Quirofano', 'Urgencias'], 'servicio');
+  req_turno := normalize_admin_choice(payload->>'turno', array['Matutino', 'Vespertino'], 'turno');
+
+  update users_mips
+  set
+    mips_id = req_mips_id,
+    nombre = req_nombre,
+    servicio = req_servicio,
+    turno = req_turno,
+    activo = req_activo,
+    pin_hash = case when req_pin is null then pin_hash else hash_user_pin(req_mips_id, validate_pin(req_pin)) end,
+    device_key = case when req_pin is null then device_key else null end
+  where id = user_uuid;
+
+  if not found then
+    raise exception 'Personal no encontrado.';
+  end if;
+
+  return admin_snapshot(password);
+end;
+$$;
+
+grant execute on function admin_create_user(text, jsonb) to anon, authenticated;

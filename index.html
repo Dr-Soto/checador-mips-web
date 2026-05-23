@@ -467,9 +467,8 @@
         </div>
       </div>
       <div id="new-user">
-        <div class="field"><label>Nombre completo</label><input id="inp-nombre" autocomplete="name" placeholder="Ej. Maria Gonzalez Lopez"></div>
-        <div class="field"><label>Servicio</label><select id="inp-servicio"></select></div>
-        <div class="field"><label>Turno</label><select id="inp-turno"></select></div>
+        <div class="field"><label>ID MIPS</label><input id="inp-mips-id" autocomplete="username" placeholder="Ej. MIPS-001"></div>
+        <div class="field"><label>PIN</label><input id="inp-pin" type="password" inputmode="numeric" maxlength="4" autocomplete="current-password" placeholder="4 digitos"></div>
       </div>
       <div class="tipo-row">
         <button id="btn-entrada" class="tipo-btn" onclick="selectTipo('entrada')">Entrada</button>
@@ -541,9 +540,12 @@
       </div>
     </div>
     <div id="tab-usuarios" style="display:none">
+      <div class="filters">
+        <button class="action-btn" onclick="openCreateUserEditor()">Agregar personal</button>
+      </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>Nombre</th><th>Servicio</th><th>Turno</th><th>Fecha registro</th><th>Activo</th><th>Acciones</th></tr></thead>
+          <thead><tr><th>ID</th><th>Nombre</th><th>Servicio</th><th>Turno</th><th>PIN</th><th>Fecha registro</th><th>Activo</th><th>Acciones</th></tr></thead>
           <tbody id="usuarios-body"></tbody>
         </table>
       </div>
@@ -635,8 +637,6 @@ async function initRegister() {
   selectTipo('');
   document.getElementById('reg-date').textContent = new Date().toLocaleString('es-MX', { hour12: false, timeZone: 'America/Ciudad_Juarez' });
   document.getElementById('form-status').textContent = 'Cargando perfil...';
-  initSelect('inp-servicio', servicios, 'Selecciona servicio');
-  initSelect('inp-turno', turnos, 'Selecciona turno');
 
   const { data, error } = await sb.rpc('get_bootstrap', {
     profile_id: safeStorageGet(STORAGE_KEY),
@@ -664,6 +664,8 @@ function renderRegisterUser() {
 function forgetUser() {
   safeStorageRemove(STORAGE_KEY);
   currentUser = null;
+  document.getElementById('inp-mips-id').value = '';
+  document.getElementById('inp-pin').value = '';
   renderRegisterUser();
 }
 
@@ -681,10 +683,8 @@ async function submitRegister() {
 
   const payload = {
     token: currentToken,
-    id: currentUser ? currentUser.id : '',
-    nombre: document.getElementById('inp-nombre').value,
-    servicio: document.getElementById('inp-servicio').value,
-    turno: document.getElementById('inp-turno').value,
+    id: currentUser ? currentUser.id : document.getElementById('inp-mips-id').value,
+    pin: currentUser ? '' : document.getElementById('inp-pin').value,
     tipo: selectedTipo,
     deviceKey: getDeviceKey(),
     dispositivo: navigator.userAgent
@@ -800,14 +800,28 @@ function renderRegistros() {
 function renderUsuarios() {
   const body = document.getElementById('usuarios-body');
   if (!allUsuarios.length) {
-    body.innerHTML = '<tr><td colspan="7">Sin personal registrado</td></tr>';
+    body.innerHTML = '<tr><td colspan="8">Sin personal registrado</td></tr>';
     return;
   }
   body.innerHTML = allUsuarios.map(row => '<tr>' +
     '<td>' + escapeHtml(row.id) + '</td><td>' + escapeHtml(row.nombre) + '</td><td>' + escapeHtml(row.servicio) + '</td>' +
-    '<td>' + escapeHtml(row.turno) + '</td><td>' + escapeHtml(row.fecha_registro) + '</td><td>' + escapeHtml(row.activo) + '</td>' +
+    '<td>' + escapeHtml(row.turno) + '</td><td>' + escapeHtml(row.pin_configurado || 'NO') + '</td><td>' + escapeHtml(row.fecha_registro) + '</td><td>' + escapeHtml(row.activo) + '</td>' +
     '<td><span class="mini-actions"><button class="mini-btn" onclick="openUserEditor(\'' + escapeAttr(row.uuid) + '\')">Editar</button><button class="mini-btn danger" onclick="deleteUser(\'' + escapeAttr(row.uuid) + '\')">Borrar</button></span></td>' +
   '</tr>').join('');
+}
+
+function openCreateUserEditor() {
+  editMode = 'user-create';
+  editUuid = '';
+  document.getElementById('modal-title').textContent = 'Agregar personal';
+  document.getElementById('modal-fields').innerHTML =
+    fieldHtml('ID MIPS', 'edit-mips-id', '', 'wide') +
+    fieldHtml('Nombre', 'edit-nombre', '', 'wide') +
+    selectHtml('Servicio', 'edit-servicio', servicios, servicios[0]) +
+    selectHtml('Turno', 'edit-turno', turnos, turnos[0]) +
+    fieldHtml('PIN', 'edit-pin', '', '', 'password', '4 digitos') +
+    selectHtml('Activo', 'edit-activo', ['SI', 'NO'], 'SI');
+  document.getElementById('edit-modal').classList.add('show');
 }
 
 function openRecordEditor(uuid) {
@@ -834,9 +848,11 @@ function openUserEditor(uuid) {
   editUuid = uuid;
   document.getElementById('modal-title').textContent = 'Editar personal';
   document.getElementById('modal-fields').innerHTML =
+    fieldHtml('ID MIPS', 'edit-mips-id', row.id, 'wide') +
     fieldHtml('Nombre', 'edit-nombre', row.nombre, 'wide') +
     selectHtml('Servicio', 'edit-servicio', servicios, row.servicio) +
     selectHtml('Turno', 'edit-turno', turnos, row.turno) +
+    fieldHtml('Nuevo PIN', 'edit-pin', '', '', 'password', 'Dejar vacio para conservar') +
     selectHtml('Activo', 'edit-activo', ['SI', 'NO'], row.activo);
   document.getElementById('edit-modal').classList.add('show');
 }
@@ -868,15 +884,30 @@ async function saveEditor() {
         hora: valueOf('edit-hora')
       }
     };
+  } else if (editMode === 'user-create') {
+    rpc = 'admin_create_user';
+    args = {
+      password: adminPassword,
+      payload: {
+        mips_id: valueOf('edit-mips-id'),
+        nombre: valueOf('edit-nombre'),
+        servicio: valueOf('edit-servicio'),
+        turno: valueOf('edit-turno'),
+        pin: valueOf('edit-pin'),
+        activo: valueOf('edit-activo') === 'SI'
+      }
+    };
   } else if (editMode === 'user') {
     rpc = 'admin_update_user';
     args = {
       password: adminPassword,
       user_uuid: editUuid,
       payload: {
+        mips_id: valueOf('edit-mips-id'),
         nombre: valueOf('edit-nombre'),
         servicio: valueOf('edit-servicio'),
         turno: valueOf('edit-turno'),
+        pin: valueOf('edit-pin'),
         activo: valueOf('edit-activo') === 'SI'
       }
     };
@@ -960,8 +991,11 @@ function dateForCompare(value) {
   return text.slice(0, 10);
 }
 
-function fieldHtml(label, id, value, extraClass) {
-  return '<div class="field ' + (extraClass || '') + '"><label>' + label + '</label><input id="' + id + '" value="' + escapeAttr(value) + '"></div>';
+function fieldHtml(label, id, value, extraClass, type, placeholder) {
+  return '<div class="field ' + (extraClass || '') + '"><label>' + label + '</label><input id="' + id + '" type="' + (type || 'text') + '" value="' + escapeAttr(value) + '"' +
+    (placeholder ? ' placeholder="' + escapeAttr(placeholder) + '"' : '') +
+    (type === 'password' ? ' inputmode="numeric" maxlength="4" autocomplete="new-password"' : '') +
+    '></div>';
 }
 
 function selectHtml(label, id, items, selected) {
@@ -975,8 +1009,9 @@ function valueOf(id) {
 }
 
 function getDeviceKey() {
-  const raw = navigator.userAgent || '';
-  const key = 'DK-UA-' + simpleHash(raw);
+  let key = safeStorageGet('mips_device_key');
+  if (key) return key;
+  key = 'DK-' + (crypto.randomUUID ? crypto.randomUUID() : simpleHash(String(Date.now()) + Math.random() + navigator.userAgent));
   safeStorageSet('mips_device_key', key);
   return key;
 }
@@ -1026,8 +1061,6 @@ setInterval(() => {
   if (document.getElementById('page-admin').classList.contains('active') && adminPassword) loadAdmin(false);
 }, 15000);
 tickClock();
-initSelect('inp-servicio', servicios, 'Selecciona servicio');
-initSelect('inp-turno', turnos, 'Selecciona turno');
 refreshQr();
 if (currentToken) initRegister();
 </script>
